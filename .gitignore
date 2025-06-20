@@ -1,0 +1,10 @@
+# Directories
+artifacts/
+medium-stories/
+
+# Specific files
+text_ideas.txt
+
+# File types
+*.csv
+
