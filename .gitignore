@@ -1,6 +1,10 @@
 # Directories
-artifacts/
-medium-stories/
+artifacts/*
+medium-stories/*
+artifacts
+medium-stories
+pyspark-env/*
+pyspark-env
 
 # Specific files
 text_ideas.txt
