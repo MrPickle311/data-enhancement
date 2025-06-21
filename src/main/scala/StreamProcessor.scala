@@ -1,8 +1,10 @@
 import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.DataFrame
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.types._
 import org.apache.spark.ml.PipelineModel
 import org.apache.spark.ml.linalg.Vector
+import org.apache.spark.sql.streaming.StreamingQuery
 
 object StreamProcessor {
 
@@ -12,25 +14,36 @@ object StreamProcessor {
     println("--- Starting Real-Time Fraud Detection Stream ---")
 
     val model: PipelineModel = loadModel
-
     val kafkaSchema: StructType = createSchema
 
     val kafkaBootstrapServers = "kafka-cluster.local:9092"
     val rawTransactionsTopic = "raw_transactions"
+    val enhancedTransactionsTopic = "enhanced_transactions"
+    val checkpointLocation = "/tmp/spark_checkpoints/fraud_detection_scala"
 
-    val parsedStreamDF = spark
+    val parsedStreamDF = readFromKafka(spark, kafkaBootstrapServers, rawTransactionsTopic, kafkaSchema)
+    val engineeredStreamDF = engineerFeatures(parsedStreamDF)
+    val outputDF = transformAndPrepareOutput(engineeredStreamDF, model)
+    val query = writeToKafka(outputDF, kafkaBootstrapServers, enhancedTransactionsTopic, checkpointLocation)
+
+    query.awaitTermination()
+  }
+
+  private def readFromKafka(spark: SparkSession, kafkaBootstrapServers: String, topic: String, schema: StructType): DataFrame = {
+    spark
       .readStream
       .format("kafka")
       .option("kafka.bootstrap.servers", kafkaBootstrapServers)
-      .option("subscribe", rawTransactionsTopic)
+      .option("subscribe", topic)
       .option("startingOffsets", "latest")
       .load()
-      .select(from_json(col("value").cast("string"), kafkaSchema).alias("data"))
+      .select(from_json(col("value").cast("string"), schema).alias("data"))
       .select("data.*")
+  }
 
-    // --- Perform same feature engineering as in training ---
+  private def engineerFeatures(df: DataFrame): DataFrame = {
     println("Applying feature engineering to the stream...")
-    val engineeredStreamDF = parsedStreamDF
+    df
       .withColumn("fromTo",
         when(col("nameOrig").contains("C") && col("nameDest").contains("C"), "CC")
           .when(col("nameOrig").contains("C") && col("nameDest").contains("M"), "CM")
@@ -40,14 +53,15 @@ object StreamProcessor {
       )
       .filter(col("fromTo").isNotNull)
       .withColumn("HourOfDay", col("step") % 24)
+  }
 
+  private def transformAndPrepareOutput(df: DataFrame, model: PipelineModel): DataFrame = {
     println("Applying ML model to the stream...")
-    val predictionsDF = model.transform(engineeredStreamDF)
+    val predictionsDF = model.transform(df)
 
-    // --- Format the output for the 'enhanced_transactions' topic ---
     val extractProbability = udf((v: Vector) => v(1))
 
-    val outputDF = predictionsDF
+    predictionsDF
       .withColumn("fraud_probability", extractProbability(col("probability")))
       .select(
         to_json(
@@ -59,18 +73,16 @@ object StreamProcessor {
           )
         ).alias("value")
       )
+  }
 
-    val enhancedTransactionsTopic = "enhanced_transactions"
-    val checkpointLocation = "/tmp/spark_checkpoints/fraud_detection_scala"
-    
-    outputDF
+  private def writeToKafka(df: DataFrame, kafkaBootstrapServers: String, topic: String, checkpointLocation: String): StreamingQuery = {
+    df
       .writeStream
       .format("kafka")
       .option("kafka.bootstrap.servers", kafkaBootstrapServers)
-      .option("topic", enhancedTransactionsTopic)
+      .option("topic", topic)
       .option("checkpointLocation", checkpointLocation)
       .start()
-      .awaitTermination()
   }
 
   private def createSchema: StructType = {
@@ -89,7 +101,7 @@ object StreamProcessor {
   }
 
   private def loadModel: PipelineModel = {
-    val modelPath = "/home/damian/business/medium-stories/data-enhancement/data-enhancement-model/spark_ml_model"
+    val modelPath = "data-enhancement/data-enhancement-model/spark_ml_model"
     val model = PipelineModel.load(modelPath)
     println("Model loaded successfully.")
     model
