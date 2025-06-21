@@ -19,9 +19,9 @@ def create_producer(bootstrap_servers='kafka-cluster.local:9092'):
         print(f"Error connecting to Kafka: {e}")
         exit()
 
-def stream_data(producer, topic_name='raw_transactions', data_file='data-enhancement-model/kafka_sample_data.json'):
+def load_records(data_file):
     """
-    Reads data from a file and sends it to a Kafka topic.
+    Reads transaction records from a JSON file.
     """
     print(f"Reading sample data from {data_file}...")
     try:
@@ -29,12 +29,18 @@ def stream_data(producer, topic_name='raw_transactions', data_file='data-enhance
             # For very large files, this would be memory-intensive.
             # Reading line-by-line would be better in a production scenario.
             records = f.readlines()
+            print(f"Successfully loaded {len(records)} records.")
+            return records
     except FileNotFoundError:
         print(f"Error: Data file not found at {data_file}")
         print("Please run the training script first to generate the sample data.")
         exit()
 
-    print(f"Starting to stream {len(records)} records to topic '{topic_name}'...")
+def stream_records(producer, topic_name, records):
+    """
+    Continuously sends records to a Kafka topic.
+    """
+    print(f"Starting to stream to topic '{topic_name}'...")
     print("Press Ctrl+C to stop the stream.")
 
     try:
@@ -53,17 +59,24 @@ def stream_data(producer, topic_name='raw_transactions', data_file='data-enhance
             time.sleep(5) # Wait before restarting the loop
     except KeyboardInterrupt:
         print("\nStreaming stopped by user.")
+
+def main():
+    """
+    Main function to set up and run the Kafka producer.
+    """
+    KAFKA_BOOTSTRAP_SERVERS = 'kafka-cluster.local:9092'
+    KAFKA_TOPIC = 'raw_transactions'
+    DATA_FILE = 'data-enhancement-model/kafka_sample_data.json'
+
+    producer = create_producer(KAFKA_BOOTSTRAP_SERVERS)
+    records = load_records(DATA_FILE)
+
+    try:
+        stream_records(producer, KAFKA_TOPIC, records)
     finally:
         producer.flush()
         producer.close()
         print("Kafka producer flushed and closed.")
-
-def main():
-    """
-    Main function to run the Kafka producer.
-    """
-    producer = create_producer()
-    stream_data(producer)
 
 if __name__ == "__main__":
     main() 
