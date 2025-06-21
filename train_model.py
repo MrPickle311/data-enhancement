@@ -1,138 +1,144 @@
-from pyspark.sql import SparkSession
+from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql.functions import col, when
-from pyspark.ml import Pipeline
+from pyspark.ml import Pipeline, PipelineModel
 from pyspark.ml.feature import StringIndexer, VectorAssembler, OneHotEncoder, MinMaxScaler
 from pyspark.ml.classification import RandomForestClassifier
 from pyspark.ml.evaluation import MulticlassClassificationEvaluator
+from typing import Tuple
 
 
-def main():
-    """
-    Main function to run the model training pipeline for fraud detection.
-    """
+def create_spark_session() -> SparkSession:
+    """Creates and configures a Spark Session."""
+    print("Creating Spark session...")
     spark = SparkSession.builder \
         .appName("PaySimFraudDetectionTraining") \
         .config("spark.driver.memory", "4g") \
         .config("spark.executor.memory", "4g") \
         .getOrCreate()
-
     spark.sparkContext.setLogLevel("WARN")
+    return spark
 
-    data_path = 'PS_20174392719_1491204439457_log.csv'
+
+def load_data(spark: SparkSession, data_path: str) -> DataFrame:
+    """Loads the transaction data from a CSV file."""
     print(f"Loading data from {data_path}...")
+    return spark.read.csv(data_path, header=True, inferSchema=True)
 
-    raw_df = spark.read.csv(data_path, header=True, inferSchema=True)
 
-    # --- Feature Engineering ---
-    # Create new features. These transformations return new DataFrames.
-    df_features = raw_df.withColumn("fromTo",
-                                    when(col("nameOrig").contains("C") & col("nameDest").contains("C"), "CC")
-                                    .when(col("nameOrig").contains("C") & col("nameDest").contains("M"), "CM")
-                                    .when(col("nameOrig").contains("M") & col("nameDest").contains("C"), "MC")
-                                    .when(col("nameOrig").contains("M") & col("nameDest").contains("M"), "MM")
-                                    .otherwise(None)
-                                    ) \
+def engineer_features(df: DataFrame) -> DataFrame:
+    """Engineers new features and adds the 'label' column."""
+    print("Engineering features...")
+    df_features = df.withColumn("fromTo",
+                                when(col("nameOrig").contains("C") & col("nameDest").contains("C"), "CC")
+                                .when(col("nameOrig").contains("C") & col("nameDest").contains("M"), "CM")
+                                .when(col("nameOrig").contains("M") & col("nameDest").contains("C"), "MC")
+                                .when(col("nameOrig").contains("M") & col("nameDest").contains("M"), "MM")
+                                .otherwise(None)
+                                ) \
         .withColumn("HourOfDay", col("step") % 24)
 
-    # Add the label column for training, using the feature-engineered DataFrame
     df_labeled = df_features.withColumn('label', col('isFraud').cast('double')).drop('isFraud')
+    return df_labeled
 
-    # --- Undersampling to handle class imbalance ---
-    # Separate the majority and minority classes
-    majority_df = df_labeled.filter(col("label") == 0)
-    minority_df = df_labeled.filter(col("label") == 1)
 
-    # Get the counts of each class
+def balance_data(df: DataFrame) -> Tuple[DataFrame, DataFrame]:
+    """Performs undersampling on the majority class to balance the dataset."""
+    print("Balancing data by undersampling...")
+    majority_df = df.filter(col("label") == 0)
+    minority_df = df.filter(col("label") == 1)
+
     minority_count = minority_df.count()
     majority_count = majority_df.count()
 
-    # Calculate the desired ratio. Here, we'll aim for a 1:1 ratio for simplicity and effectiveness.
-    # For every fraud case, we will keep one non-fraud case.
+    if majority_count == 0 or minority_count == 0:
+        print("Cannot balance data, one class is empty.")
+        return df, minority_df
     sampling_ratio = minority_count / majority_count
-
     print(f"Before undersampling: Majority count={majority_count}, Minority count={minority_count}")
 
-    # Undersample the majority class
     sampled_majority_df = majority_df.sample(withReplacement=False, fraction=sampling_ratio, seed=42)
-
-    # Combine the undersampled majority class with the original minority class
     df_balanced = sampled_majority_df.unionAll(minority_df)
 
-    print(
-        f"After undersampling: New majority count={sampled_majority_df.count()}, Minority count={minority_df.count()}")
+    print(f"After undersampling: New majority count={sampled_majority_df.count()}, Minority count={minority_df.count()}")
+    return df_balanced, minority_df
 
+
+def build_pipeline() -> Pipeline:
+    """Defines and builds the machine learning pipeline."""
     print("Defining the machine learning pipeline...")
-    # Stages for one-hot encoding categorical variables
     categorical_cols = ['type', 'fromTo']
     indexers = [
-        StringIndexer(inputCol=c, outputCol=f"{c}_index", handleInvalid="keep")
-        for c in categorical_cols
+        StringIndexer(inputCol=c, outputCol=f"{c}_index", handleInvalid="keep") for c in categorical_cols
     ]
     encoders = [
-        OneHotEncoder(inputCol=f"{c}_index", outputCol=f"{c}_ohe")
-        for c in categorical_cols
+        OneHotEncoder(inputCol=f"{c}_index", outputCol=f"{c}_ohe") for c in categorical_cols
     ]
 
-    # Stage to assemble all feature columns into a single vector
-    numerical_cols = ['step', 'amount', 'oldbalanceOrg', 'newbalanceOrig', 'newbalanceDest', 'oldbalanceDest',
-                      'HourOfDay']
+    numerical_cols = ['step', 'amount', 'oldbalanceOrg', 'newbalanceOrig', 'newbalanceDest', 'oldbalanceDest', 'HourOfDay']
     ohe_cols = [f"{c}_ohe" for c in categorical_cols]
     assembler_inputs = numerical_cols + ohe_cols
-    assembler = VectorAssembler(inputCols=assembler_inputs, outputCol="features")
+    assembler = VectorAssembler(inputCols=assembler_inputs, outputCol="features", handleInvalid="skip")
 
-    # Stage for the RandomForestClassifier model, now using the scaled features
-    rf = RandomForestClassifier(numTrees=100)
+    scaler = MinMaxScaler(inputCol="features", outputCol="scaledFeatures")
+    rf = RandomForestClassifier(labelCol="label", featuresCol="scaledFeatures", numTrees=100)
 
-    # Chain all stages into a pipeline, including the new scaler
-    pipeline = Pipeline(stages=indexers + encoders + [assembler, rf])
+    return Pipeline(stages=indexers + encoders + [assembler, scaler, rf])
 
+
+def train_and_evaluate(pipeline: Pipeline, df_balanced: DataFrame) -> PipelineModel:
+    """Splits data, trains the model, and evaluates its performance."""
     print("Splitting data into training and testing sets...")
-    # We now use the balanced dataframe for training. We still need a separate, original test set for a fair evaluation.
     (training_data, test_data) = df_balanced.randomSplit([0.8, 0.2], seed=42)
 
     print("Training the RandomForest model... This may take a few minutes.")
     model = pipeline.fit(training_data)
     print("Model training complete.")
 
-    # Overwrite the model in the specified path
-    model_path = "data-enhancement-model/spark_ml_model"
-    print(f"Saving new fraud detection model to {model_path}...")
-    model.write().overwrite().save(model_path)
-    print("Model saved successfully.")
-
     print("Evaluating model performance on the test set...")
     predictions = model.transform(test_data)
-
-    # Use F1-Score as it's a good metric for imbalanced datasets
     evaluator_f1 = MulticlassClassificationEvaluator(labelCol="label", predictionCol="prediction", metricName="f1")
     f1_score = evaluator_f1.evaluate(predictions)
 
-    evaluator_accuracy = MulticlassClassificationEvaluator(labelCol="label", predictionCol="prediction",
-                                                           metricName="accuracy")
+    evaluator_accuracy = MulticlassClassificationEvaluator(labelCol="label", predictionCol="prediction", metricName="accuracy")
     accuracy = evaluator_accuracy.evaluate(predictions)
 
     print(f"  Test Set F1-Score: {f1_score:.4f}")
     print(f"  Test Set Accuracy: {accuracy:.4f}")
 
-    print("Extracting a sample of FRAUDULENT data for the Kafka producer...")
-    # The columns selected here must match the schema expected by the StreamProcessor
-    # We select from the original minority_df which contains only records where isFraud == 1 (label == 1.0)
-    producer_sample_df = minority_df.select('step', 'type', 'amount', 'nameOrig', 'oldbalanceOrg', 'newbalanceOrig',
-                                            'nameDest',
-                                            'oldbalanceDest', 'newbalanceDest', 'isFlaggedFraud')
+    return model
 
-    # Take 100 records and write them to a JSON file for the producer to use
+
+def save_outputs(model: PipelineModel, df_fraud: DataFrame, model_path: str, sample_data_path: str):
+    """Saves the trained model and sample data for the producer."""
+    print(f"Saving new fraud detection model to {model_path}...")
+    model.write().overwrite().save(model_path)
+    print("Model saved successfully.")
+
+    print(f"Extracting a sample of FRAUDULENT data to {sample_data_path}...")
+    producer_sample_df = df_fraud.select('step', 'type', 'amount', 'nameOrig', 'oldbalanceOrg', 'newbalanceOrig', 'nameDest', 'oldbalanceDest', 'newbalanceDest', 'isFlaggedFraud')
     kafka_sample_data = producer_sample_df.limit(100).toJSON().collect()
 
-    output_path = "data-enhancement-model/kafka_sample_data.json"
-    print(f"Overwriting sample data at {output_path}...")
-    with open(output_path, 'w') as f:
+    with open(sample_data_path, 'w') as f:
         for row in kafka_sample_data:
             f.write(row + '\n')
 
-    print(f"100 sample records saved to {output_path}.")
-    print("\n--- Model training script finished successfully! ---")
+    print(f"{len(kafka_sample_data)} sample records saved.")
 
+
+def main():
+    """Main function to run the model training pipeline."""
+    spark = create_spark_session()
+
+    raw_df = load_data(spark, 'PS_20174392719_1491204439457_log.csv')
+    df_labeled = engineer_features(raw_df)
+    df_balanced, minority_df = balance_data(df_labeled)
+    pipeline = build_pipeline()
+    model = train_and_evaluate(pipeline, df_balanced)
+    save_outputs(model, minority_df,
+                 model_path="data-enhancement-model/spark_ml_model",
+                 sample_data_path="data-enhancement-model/kafka_sample_data.json")
+
+    print("\n--- Model training script finished successfully! ---")
     spark.stop()
 
 
