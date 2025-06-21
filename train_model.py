@@ -22,19 +22,20 @@ def main():
     print(f"Loading data from {data_path}...")
 
     raw_df = spark.read.csv(data_path, header=True, inferSchema=True)
-    raw_df.withColumn("fromTo",
-                      when(col("nameOrig").contains("C") & col("nameDest").contains("C"), "CC")
-                      .when(col("nameOrig").contains("C") & col("nameDest").contains("M"), "CM")
-                      .when(col("nameOrig").contains("M") & col("nameDest").contains("C"), "MC")
-                      .when(col("nameOrig").contains("M") & col("nameDest").contains("M"), "MM")
-                      .otherwise(None)
-                      )
-    raw_df.withColumn("HourOfDay", col("step") % 24)
-    raw_df.drop("isFlaggedFraud", "nameOrig", "nameDest")
 
-    # Select the features that will be used in the model
-    # These were chosen based on the logic in the original and Scala versions
-    df_labeled = raw_df.withColumn('label', col('isFraud').cast('double')).drop('isFraud')
+    # --- Feature Engineering ---
+    # Create new features. These transformations return new DataFrames.
+    df_features = raw_df.withColumn("fromTo",
+                                     when(col("nameOrig").contains("C") & col("nameDest").contains("C"), "CC")
+                                     .when(col("nameOrig").contains("C") & col("nameDest").contains("M"), "CM")
+                                     .when(col("nameOrig").contains("M") & col("nameDest").contains("C"), "MC")
+                                     .when(col("nameOrig").contains("M") & col("nameDest").contains("M"), "MM")
+                                     .otherwise(None)
+                                     ) \
+                       .withColumn("HourOfDay", col("step") % 24)
+
+    # Add the label column for training, using the feature-engineered DataFrame
+    df_labeled = df_features.withColumn('label', col('isFraud').cast('double')).drop('isFraud')
 
     print("Sampling the dataset for faster training...")
     # For a real-world scenario, you might not sample or would use techniques
@@ -42,18 +43,29 @@ def main():
     df_sampled = df_labeled.sample(withReplacement=False, fraction=0.1, seed=42)
 
     print("Defining the machine learning pipeline...")
-    # Stage 1: Convert the 'type' string column to a numerical index
-    type_indexer = StringIndexer(inputCol="type", outputCol="type_indexed", handleInvalid="keep")
+    # Stages for one-hot encoding categorical variables
+    categorical_cols = ['type', 'fromTo']
+    indexers = [
+        StringIndexer(inputCol=c, outputCol=f"{c}_index", handleInvalid="keep")
+        for c in categorical_cols
+    ]
+    encoders = [
+        OneHotEncoder(inputCol=f"{c}_index", outputCol=f"{c}_ohe")
+        for c in categorical_cols
+    ]
 
-    # Stage 2: Assemble feature columns into a single vector
-    assembler_inputs = ['amount', 'oldbalanceOrg', 'newbalanceOrig', 'type_indexed', 'newbalanceDest', 'oldbalanceDest']
+
+    # Stage to assemble all feature columns into a single vector
+    numerical_cols = ['step', 'amount', 'oldbalanceOrg', 'newbalanceOrig', 'newbalanceDest', 'oldbalanceDest', 'HourOfDay']
+    ohe_cols = [f"{c}_ohe" for c in categorical_cols]
+    assembler_inputs = numerical_cols + ohe_cols
     assembler = VectorAssembler(inputCols=assembler_inputs, outputCol="features")
 
-    # Stage 3: Define the RandomForestClassifier model
-    rf = RandomForestClassifier(labelCol="label", featuresCol="features", numTrees=100)
+    # Stage for the RandomForestClassifier model
+    rf = RandomForestClassifier(numTrees=100)
 
-    # Chain the stages into a pipeline
-    pipeline = Pipeline(stages=[type_indexer, assembler, rf])
+    # Chain all stages into a pipeline
+    pipeline = Pipeline(stages=indexers + encoders + [assembler, rf])
 
     print("Splitting data into training and testing sets...")
     (training_data, test_data) = df_sampled.randomSplit([0.8, 0.2], seed=42)
@@ -83,8 +95,9 @@ def main():
     print(f"  Test Set Accuracy: {accuracy:.4f}")
 
     print("Extracting a sample of data for the Kafka producer...")
-    # The columns selected here should match what the producer and stream processor expect
-    producer_sample_df = df_labeled.select('type', 'amount', 'nameOrig', 'oldbalanceOrg', 'newbalanceOrig', 'nameDest',
+    # The columns selected here must match the schema expected by the StreamProcessor
+    # We select from the sampled dataframe to get the raw data needed for streaming feature engineering
+    producer_sample_df = df_sampled.select('step', 'type', 'amount', 'nameOrig', 'oldbalanceOrg', 'newbalanceOrig', 'nameDest',
                                            'oldbalanceDest', 'newbalanceDest', 'isFlaggedFraud')
 
     # Take 100 records and write them to a JSON file for the producer to use
