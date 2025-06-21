@@ -26,8 +26,6 @@ def load_records(data_file):
     print(f"Reading sample data from {data_file}...")
     try:
         with open(data_file, 'r') as f:
-            # For very large files, this would be memory-intensive.
-            # Reading line-by-line would be better in a production scenario.
             records = f.readlines()
             print(f"Successfully loaded {len(records)} records.")
             return records
@@ -50,13 +48,11 @@ def stream_records(producer, topic_name, records):
                     record_json = json.loads(record_str)
                     producer.send(topic_name, value=record_json)
                     print(f"Sent Transaction: Type={record_json.get('type', 'N/A')}, Amount={record_json.get('amount', 0)}")
-                    # Wait for 1-3 seconds to simulate a real-time stream
                     time.sleep(random.uniform(1, 3))
                 except json.JSONDecodeError:
-                    # This can happen if a line in the file is not a valid JSON.
                     print(f"Could not decode JSON, skipping record: {record_str}")
             print("Completed a full loop over the data. Restarting...")
-            time.sleep(5) # Wait before restarting the loop
+            time.sleep(5)
     except KeyboardInterrupt:
         print("\nStreaming stopped by user.")
 
