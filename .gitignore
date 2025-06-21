@@ -1,13 +1,21 @@
 # Directories
-artifacts/*
-medium-stories/*
-artifacts
-medium-stories
-pyspark-env/*
-pyspark-env
+/target/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+/pyspark-env/
+.idea
+.venv
+data-enhancement-model/
 
 # Specific files
 text_ideas.txt
+pom.xml.bak
+data-enhancement-scala.iml
 
 # File types
 *.csv

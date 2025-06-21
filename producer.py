@@ -1,16 +1,11 @@
 import json
 import time
 from kafka import KafkaProducer
+import random
 
-def create_producer(bootstrap_servers='localhost:9092'):
+def create_producer(bootstrap_servers='kafka-cluster.local:9092'):
     """
     Creates and returns a Kafka producer.
-    
-    Args:
-        bootstrap_servers (str): The Kafka bootstrap servers.
-    
-    Returns:
-        KafkaProducer: A configured Kafka producer instance.
     """
     print(f"Connecting to Kafka at {bootstrap_servers}...")
     try:
@@ -22,24 +17,22 @@ def create_producer(bootstrap_servers='localhost:9092'):
         return producer
     except Exception as e:
         print(f"Error connecting to Kafka: {e}")
-        # In a real application, you might want to handle this more gracefully.
-        # For this example, we will exit if we can't connect.
         exit()
 
-def stream_data(producer, topic_name='raw_transactions', data_file='medium-stories/data-enhancement/kafka_sample_data.json'):
+def stream_data(producer, topic_name='raw_transactions', data_file='data-enhancement-model/kafka_sample_data_fraud.json'):
     """
     Reads data from a file and sends it to a Kafka topic.
-    
-    Args:
-        producer (KafkaProducer): The Kafka producer to use.
-        topic_name (str): The name of the Kafka topic.
-        data_file (str): The path to the file containing sample data.
     """
     print(f"Reading sample data from {data_file}...")
-    with open(data_file, 'r') as f:
-        # readlines() is used for simplicity. For very large files,
-        # consider reading line by line to avoid memory issues.
-        records = f.readlines()
+    try:
+        with open(data_file, 'r') as f:
+            # For very large files, this would be memory-intensive.
+            # Reading line-by-line would be better in a production scenario.
+            records = f.readlines()
+    except FileNotFoundError:
+        print(f"Error: Data file not found at {data_file}")
+        print("Please run the training script first to generate the sample data.")
+        exit()
 
     print(f"Starting to stream {len(records)} records to topic '{topic_name}'...")
     print("Press Ctrl+C to stop the stream.")
@@ -47,11 +40,15 @@ def stream_data(producer, topic_name='raw_transactions', data_file='medium-stori
     try:
         while True:
             for record_str in records:
-                record_json = json.loads(record_str)
-                producer.send(topic_name, value=record_json)
-                print(f"Sent Transaction: Type={record_json['type']}, Amount={record_json['amount']}")
-                # Wait for 1-3 seconds to simulate a real-time stream
-                time.sleep(time.uniform(1, 3))
+                try:
+                    record_json = json.loads(record_str)
+                    producer.send(topic_name, value=record_json)
+                    print(f"Sent Transaction: Type={record_json.get('type', 'N/A')}, Amount={record_json.get('amount', 0)}")
+                    # Wait for 1-3 seconds to simulate a real-time stream
+                    time.sleep(random.uniform(1, 3))
+                except json.JSONDecodeError:
+                    # This can happen if a line in the file is not a valid JSON.
+                    print(f"Could not decode JSON, skipping record: {record_str}")
             print("Completed a full loop over the data. Restarting...")
             time.sleep(5) # Wait before restarting the loop
     except KeyboardInterrupt:

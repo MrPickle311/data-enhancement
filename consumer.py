@@ -1,16 +1,9 @@
 import json
 from kafka import KafkaConsumer
 
-def create_consumer(topic_name='enhanced_transactions', bootstrap_servers='localhost:9092'):
+def create_consumer(topic_name='enhanced_transactions', bootstrap_servers='kafka-cluster.local:9092'):
     """
     Creates and returns a Kafka consumer subscribed to a specific topic.
-    
-    Args:
-        topic_name (str): The name of the Kafka topic to subscribe to.
-        bootstrap_servers (str): The Kafka bootstrap servers.
-    
-    Returns:
-        KafkaConsumer: A configured Kafka consumer instance.
     """
     print(f"Connecting to Kafka and subscribing to topic '{topic_name}'...")
     try:
@@ -29,9 +22,6 @@ def create_consumer(topic_name='enhanced_transactions', bootstrap_servers='local
 def consume_messages(consumer):
     """
     Continuously listens for and prints messages from the Kafka consumer.
-    
-    Args:
-        consumer (KafkaConsumer): The consumer instance.
     """
     print("\n--- Listening for Enhanced Fraud Predictions ---")
     print("Press Ctrl+C to stop the consumer.")
