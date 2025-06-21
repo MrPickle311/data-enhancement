@@ -11,11 +11,13 @@ __pycache__/
 .idea
 .venv
 data-enhancement-model/
+data-enhancement-model-old/
 
 # Specific files
 text_ideas.txt
 pom.xml.bak
 data-enhancement-scala.iml
+dependency-reduced-pom.xml
 
 # File types
 *.csv

@@ -19,7 +19,7 @@ def create_producer(bootstrap_servers='kafka-cluster.local:9092'):
         print(f"Error connecting to Kafka: {e}")
         exit()
 
-def stream_data(producer, topic_name='raw_transactions', data_file='data-enhancement-model/kafka_sample_data_fraud.json'):
+def stream_data(producer, topic_name='raw_transactions', data_file='data-enhancement-model/kafka_sample_data.json'):
     """
     Reads data from a file and sends it to a Kafka topic.
     """
